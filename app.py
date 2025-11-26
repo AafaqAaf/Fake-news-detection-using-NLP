@@ -11,6 +11,9 @@ import plotly.graph_objects as go
 import plotly.express as px
 from sklearn.pipeline import make_pipeline
 import numpy as np
+import requests
+import os
+from datetime import datetime
 
 # Page config
 st.set_page_config(page_title="Fake News Detection System", layout="wide", page_icon="📰")
@@ -27,8 +30,43 @@ def load_models():
     vectorizer = joblib.load('vectorizer.joblib')
     return models, vectorizer
 
+HISTORY_FILE = 'history.csv'
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        return pd.read_csv(HISTORY_FILE)
+    return pd.DataFrame(columns=['Timestamp', 'Text', 'Prediction', 'Confidence'])
+
+def save_history(text, prediction, confidence):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    new_entry = pd.DataFrame([{
+        'Timestamp': timestamp,
+        'Text': text,
+        'Prediction': prediction,
+        'Confidence': confidence
+    }])
+    if not os.path.exists(HISTORY_FILE):
+        new_entry.to_csv(HISTORY_FILE, index=False)
+    else:
+        new_entry.to_csv(HISTORY_FILE, mode='a', header=False, index=False)
+
 stop_words = set(stopwords.words('english'))
 lemmatizer = WordNetLemmatizer()
+
+def get_text_from_url(url):
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.decompose()
+            
+        text = soup.get_text(separator=' ')
+        return text
+    except Exception as e:
+        return None
 
 def clean_text(text):
     text = BeautifulSoup(text, "html.parser").get_text()
@@ -117,15 +155,32 @@ st.title("📰 Fake News Detection System")
 
 # Sidebar
 st.sidebar.header("Navigation")
-page = st.sidebar.radio("Go to", ["Analysis Dashboard", "Project Overview"])
+page = st.sidebar.radio("Go to", ["Analysis Dashboard", "History", "Project Overview"])
 
 models, vectorizer = load_models()
 
 if page == "Analysis Dashboard":
     st.header("🕵️‍♂️ Analysis Dashboard")
     
-    news_text = st.text_area("Paste the news article text here:", height=150, placeholder="Enter news content...")
+    input_method = st.radio("Choose Input Method:", ["Text", "URL"], horizontal=True)
     
+    news_text = ""
+    
+    if input_method == "Text":
+        news_text = st.text_area("Paste the news article text here:", height=150, placeholder="Enter news content...")
+    else:
+        url_input = st.text_input("Enter Article URL:", placeholder="https://example.com/article")
+        if url_input:
+            with st.spinner("Fetching content from URL..."):
+                fetched_text = get_text_from_url(url_input)
+                if fetched_text:
+                    news_text = fetched_text
+                    st.success("Content fetched successfully!")
+                    with st.expander("View Fetched Text"):
+                        st.write(news_text[:1000] + "..." if len(news_text) > 1000 else news_text)
+                else:
+                    st.error("Failed to fetch content from the URL. Please check the URL or try pasting the text manually.")
+
     if st.button("Analyze News", type="primary"):
         if news_text:
             with st.spinner("Processing and Analyzing..."):
@@ -137,6 +192,11 @@ if page == "Analysis Dashboard":
                 primary_model = models['Logistic Regression']
                 prob = primary_model.predict_proba(vectorized_text)[0]
                 prob_fake, prob_true = prob[0], prob[1]
+                
+                # Save to History
+                prediction_label = "Real News" if prob_true > 0.5 else "Fake News"
+                confidence_score = prob_true if prob_true > 0.5 else prob_fake
+                save_history(news_text, prediction_label, confidence_score)
                 
                 # --- Section 1: Analysis Results ---
                 st.subheader("📊 Analysis Results")
@@ -217,6 +277,30 @@ if page == "Analysis Dashboard":
                     
         else:
             st.warning("Please enter some text to analyze.")
+
+elif page == "History":
+    st.header("📜 Analysis History")
+    df = load_history()
+    if not df.empty:
+        # Display as a dataframe
+        st.dataframe(df, use_container_width=True)
+        
+        # Download button
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download History as CSV",
+            data=csv,
+            file_name='fake_news_history.csv',
+            mime='text/csv',
+        )
+        
+        if st.button("Clear History"):
+            if os.path.exists(HISTORY_FILE):
+                os.remove(HISTORY_FILE)
+                st.success("History cleared!")
+                st.rerun()
+    else:
+        st.info("No history found. Analyze some news to see it here!")
 
 elif page == "Project Overview":
     st.header("ℹ️ Project Overview")
